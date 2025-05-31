@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { Upload, Download, ChevronLeft, ChevronRight, Type, Eraser, CloudyIcon as Blur, RotateCcw } from "lucide-react"
+import { Upload, Download, ChevronLeft, ChevronRight, Type, Eraser, CloudyIcon as Blur, RotateCcw, Move } from "lucide-react"
 
 interface EditAction {
   type: "blur" | "erase" | "text"
@@ -26,13 +26,18 @@ export default function PDFEditor() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
   const [scale, setScale] = useState(1.5)
-  const [editMode, setEditMode] = useState<"view" | "blur" | "erase" | "text">("view")
+  const [editMode, setEditMode] = useState<"view" | "move" | "blur" | "erase" | "text">("view")
   const [editActions, setEditActions] = useState<EditAction[]>([])
   const [isDrawing, setIsDrawing] = useState(false)
   const [startPos, setStartPos] = useState({ x: 0, y: 0 })
   const [textInput, setTextInput] = useState("")
   const [fontSize, setFontSize] = useState(16)
   const [blurRadius, setBlurRadius] = useState(5)
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+
+  // Add state for the selected export format
+  const [exportFormat, setExportFormat] = useState<"pdf" | "png" | "jpeg">("pdf")
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -48,8 +53,14 @@ export default function PDFEditor() {
     }
     document.head.appendChild(script)
 
+    // Load pdf-lib for PDF editing
+    const scriptPdfLib = document.createElement("script")
+    scriptPdfLib.src = "https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"
+    document.head.appendChild(scriptPdfLib)
+
     return () => {
       document.head.removeChild(script)
+      document.head.removeChild(scriptPdfLib)
     }
   }, [])
 
@@ -87,8 +98,14 @@ export default function PDFEditor() {
       viewport: viewport,
     }
 
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    context.save()
+    context.translate(panOffset.x, panOffset.y)
+    
     await page.render(renderContext).promise
     applyEditActions(context)
+    
+    context.restore()
   }
 
   const applyEditActions = (context: CanvasRenderingContext2D) => {
@@ -113,8 +130,6 @@ export default function PDFEditor() {
   }
 
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (editMode === "view") return
-
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -123,26 +138,61 @@ export default function PDFEditor() {
     const y = event.clientY - rect.top
 
     setStartPos({ x, y })
-    setIsDrawing(true)
-
-    if (editMode === "text") {
+    
+    if (editMode === "move") {
+      setIsPanning(true)
+      document.body.style.cursor = "grabbing"
+    } else if (editMode === "view") {
+      return
+    } else if (editMode === "text") {
       const text = prompt("Enter text:")
       if (text) {
         const newAction: EditAction = {
           type: "text",
-          x,
-          y,
+          x: x - panOffset.x,
+          y: y - panOffset.y,
           text,
           fontSize,
         }
         setEditActions((prev) => [...prev, newAction])
         if (pdfDoc) renderPage(pdfDoc, currentPage)
       }
+    } else {
+      setIsDrawing(true)
+    }
+  }
+
+  const handleCanvasMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isPanning && editMode === "move") {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      
+      const rect = canvas.getBoundingClientRect()
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+      
+      const deltaX = x - startPos.x
+      const deltaY = y - startPos.y
+      
+      setPanOffset(prev => ({
+        x: prev.x + deltaX,
+        y: prev.y + deltaY
+      }))
+      
+      setStartPos({ x, y })
+      
+      if (pdfDoc) renderPage(pdfDoc, currentPage)
     }
   }
 
   const handleCanvasMouseUp = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || editMode === "view" || editMode === "text") return
+    if (isPanning) {
+      setIsPanning(false)
+      document.body.style.cursor = "default"
+      return
+    }
+    
+    if (!isDrawing || editMode === "view" || editMode === "text" || editMode === "move") return
 
     const canvas = canvasRef.current
     if (!canvas) return
@@ -193,21 +243,86 @@ export default function PDFEditor() {
   }
 
   const downloadPDF = async () => {
-    if (!canvasRef.current) return
+    if (!canvasRef.current || !pdfDoc || !pdfFile) return
 
-    // Convert canvas to blob and download
-    canvasRef.current.toBlob((blob) => {
-      if (blob) {
+    if (exportFormat === "pdf") {
+      try {
+        // Create a new PDF document
+        // @ts-ignore
+        const PDFLib = window.PDFLib
+        if (!PDFLib) {
+          alert("PDF-lib not loaded. Please try again.")
+          return
+        }
+
+        // Load the original PDF
+        const existingPdfBytes = await pdfFile.arrayBuffer()
+        const pdfDoc = await PDFLib.PDFDocument.load(existingPdfBytes)
+        
+        // Get the current page
+        const pages = pdfDoc.getPages()
+        const currentPageObj = pages[currentPage - 1]
+        
+        // Convert canvas to image
+        const canvas = canvasRef.current
+        const imageData = canvas.toDataURL('image/png')
+        const pngImage = await pdfDoc.embedPng(imageData)
+        
+        // Calculate scaling to cover the page
+        const { width, height } = currentPageObj.getSize()
+        
+        // Draw the edited canvas onto the PDF page
+        currentPageObj.drawImage(pngImage, {
+          x: 0,
+          y: 0,
+          width: width,
+          height: height,
+        })
+        
+        // Save and download
+        const pdfBytes = await pdfDoc.save()
+        const blob = new Blob([pdfBytes], { type: "application/pdf" })
         const url = URL.createObjectURL(blob)
         const a = document.createElement("a")
         a.href = url
-        a.download = `edited-${pdfFile?.name || "document"}.png`
+        a.download = `edited-${pdfFile.name}`
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
+      } catch (err) {
+        console.error("Error saving as PDF:", err)
+        alert("Error saving as PDF. Falling back to PNG format.")
+        downloadAsImage("png")
       }
-    })
+    } else {
+      downloadAsImage(exportFormat)
+    }
+  }
+
+  const downloadAsImage = (format: "png" | "jpeg") => {
+    if (!canvasRef.current) return
+
+    const mimeType = format === "png" ? "image/png" : "image/jpeg"
+    const fileExtension = format === "png" ? "png" : "jpg"
+    
+    // Convert canvas to blob and download
+    canvasRef.current.toBlob(
+      (blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement("a")
+          a.href = url
+          a.download = `edited-${pdfFile?.name || "document"}.${fileExtension}`
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+        }
+      },
+      mimeType,
+      format === "jpeg" ? 0.9 : undefined
+    )
   }
 
   useEffect(() => {
@@ -290,6 +405,14 @@ export default function PDFEditor() {
                       <Type className="w-4 h-4 mr-2" />
                       Add Text
                     </Button>
+                    <Button
+                      variant={editMode === "move" ? "default" : "outline"}
+                      onClick={() => setEditMode("move")}
+                      className="w-full"
+                    >
+                      <Move className="w-4 h-4 mr-2" />
+                      Move/Pan
+                    </Button>
                   </CardContent>
                 </Card>
 
@@ -300,42 +423,105 @@ export default function PDFEditor() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div>
-                      <Label className="text-sm font-medium">Zoom Level</Label>
-                      <Slider
-                        value={[scale]}
-                        onValueChange={(value) => setScale(value[0])}
-                        min={0.5}
-                        max={3}
-                        step={0.1}
-                        className="mt-2"
-                      />
-                      <span className="text-xs text-gray-500">{Math.round(scale * 100)}%</span>
+                      <Label className="text-sm font-medium">Zoom Level (%)</Label>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Input
+                          type="number"
+                          value={Math.round(scale * 100)}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value)
+                            if (!isNaN(value) && value >= 50 && value <= 300) {
+                              setScale(value / 100)
+                            }
+                          }}
+                          min="50"
+                          max="300"
+                          step="10"
+                          className="w-20"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setScale((prev) => Math.max(prev - 0.1, 0.5))}
+                        >
+                          -
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setScale((prev) => Math.min(prev + 0.1, 3))}
+                        >
+                          +
+                        </Button>
+                      </div>
                     </div>
 
                     <div>
-                      <Label className="text-sm font-medium">Font Size</Label>
-                      <Slider
-                        value={[fontSize]}
-                        onValueChange={(value) => setFontSize(value[0])}
-                        min={8}
-                        max={48}
-                        step={1}
-                        className="mt-2"
-                      />
-                      <span className="text-xs text-gray-500">{fontSize}px</span>
+                      <Label className="text-sm font-medium">Font Size (px)</Label>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Input
+                          type="number"
+                          value={fontSize}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value)
+                            if (!isNaN(value) && value >= 8 && value <= 48) {
+                              setFontSize(value)
+                            }
+                          }}
+                          min="8"
+                          max="48"
+                          step="1"
+                          className="w-20"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setFontSize((prev) => Math.max(prev - 1, 8))}
+                        >
+                          -
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setFontSize((prev) => Math.min(prev + 1, 48))}
+                        >
+                          +
+                        </Button>
+                      </div>
                     </div>
 
                     <div>
-                      <Label className="text-sm font-medium">Blur Radius</Label>
-                      <Slider
-                        value={[blurRadius]}
-                        onValueChange={(value) => setBlurRadius(value[0])}
-                        min={1}
-                        max={20}
-                        step={1}
-                        className="mt-2"
-                      />
-                      <span className="text-xs text-gray-500">{blurRadius}px</span>
+                      <Label className="text-sm font-medium">Blur Radius (px)</Label>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Input
+                          type="number"
+                          value={blurRadius}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value)
+                            if (!isNaN(value) && value >= 1 && value <= 20) {
+                              setBlurRadius(value)
+                            }
+                          }}
+                          min="1"
+                          max="20"
+                          step="1"
+                          className="w-20"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setBlurRadius((prev) => Math.max(prev - 1, 1))}
+                        >
+                          -
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setBlurRadius((prev) => Math.min(prev + 1, 20))}
+                        >
+                          +
+                        </Button>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -343,6 +529,35 @@ export default function PDFEditor() {
                 {/* Actions */}
                 <Card className="bg-gradient-to-br from-red-50 to-pink-50">
                   <CardContent className="p-4 space-y-2">
+                    <div className="mb-2">
+                      <Label className="text-sm font-medium mb-1">Export Format</Label>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant={exportFormat === "pdf" ? "default" : "outline"}
+                          onClick={() => setExportFormat("pdf")}
+                          className="flex-1"
+                        >
+                          PDF
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={exportFormat === "png" ? "default" : "outline"}
+                          onClick={() => setExportFormat("png")}
+                          className="flex-1"
+                        >
+                          PNG
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={exportFormat === "jpeg" ? "default" : "outline"}
+                          onClick={() => setExportFormat("jpeg")}
+                          className="flex-1"
+                        >
+                          JPEG
+                        </Button>
+                      </div>
+                    </div>
                     <Button onClick={clearActions} variant="outline" className="w-full">
                       <RotateCcw className="w-4 h-4 mr-2" />
                       Clear Edits
@@ -397,8 +612,15 @@ export default function PDFEditor() {
                           <canvas
                             ref={canvasRef}
                             onMouseDown={handleCanvasMouseDown}
+                            onMouseMove={handleCanvasMouseMove}
                             onMouseUp={handleCanvasMouseUp}
+                            onMouseLeave={() => {
+                              setIsDrawing(false)
+                              setIsPanning(false)
+                              document.body.style.cursor = "default"
+                            }}
                             className={`max-w-full h-auto ${
+                              editMode === "move" ? "cursor-grab" : 
                               editMode !== "view" ? "cursor-crosshair" : "cursor-default"
                             }`}
                           />
@@ -420,6 +642,9 @@ export default function PDFEditor() {
                     <h3 className="font-semibold text-gray-800 mb-2">How to use:</h3>
                     <ul className="text-sm text-gray-600 space-y-1">
                       <li>
+                        • <strong>Move Tool:</strong> Click and drag to pan around the PDF
+                      </li>
+                      <li>
                         • <strong>Blur Tool:</strong> Click and drag to select areas to blur
                       </li>
                       <li>
@@ -432,7 +657,7 @@ export default function PDFEditor() {
                         • <strong>Navigation:</strong> Use the arrow buttons to navigate pages
                       </li>
                       <li>
-                        • <strong>Download:</strong> Save your edited PDF as an image
+                        • <strong>Download:</strong> Save your edited PDF in PDF, PNG, or JPEG format
                       </li>
                     </ul>
                   </CardContent>
