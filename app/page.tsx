@@ -117,6 +117,7 @@ export default function PDFEditor() {
     context.restore()
   }
 
+  // Update the applyEditActions function to position text correctly
   const applyEditActions = (context: CanvasRenderingContext2D) => {
     editActions.forEach((action) => {
       if (action.type === "blur") {
@@ -133,7 +134,8 @@ export default function PDFEditor() {
         // Add text
         context.fillStyle = "#000000"
         context.font = `${action.fontSize || fontSize}px Arial`
-        context.fillText(action.text || "", action.x, action.y)
+        // Add baseline offset to position text correctly
+        context.fillText(action.text || "", action.x, action.y + (action.fontSize || fontSize)/3)
       }
     })
   }
@@ -349,9 +351,31 @@ export default function PDFEditor() {
         y: textInputPosition.y,
         text: textInputValue,
         fontSize,
+      };
+      
+      // Create updated actions array explicitly so we can use it immediately
+      const updatedActions = [...editActions, newAction];
+      
+      // Update state
+      setEditActions(updatedActions);
+      
+      // Immediately render with the updated actions
+      if (pdfDoc) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const context = canvas.getContext("2d");
+          if (context) {
+            // Draw the new text action immediately with the same baseline adjustment
+            context.save();
+            context.translate(panOffset.x, panOffset.y);
+            context.fillStyle = "#000000";
+            context.font = `${fontSize}px Arial`;
+            // Match the text baseline adjustment from applyEditActions
+            context.fillText(textInputValue, textInputPosition.x, textInputPosition.y + fontSize/3);
+            context.restore();
+          }
+        }
       }
-      setEditActions((prev) => [...prev, newAction]);
-      if (pdfDoc) renderPage(pdfDoc, currentPage);
     }
     setTextInputActive(false);
   }
