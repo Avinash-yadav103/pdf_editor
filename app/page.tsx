@@ -4,11 +4,12 @@ import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Slider } from "@/components/ui/slider"
-import { Upload, Download, ChevronLeft, ChevronRight, Type, Eraser, CloudyIcon as Blur, RotateCcw, Move } from "lucide-react"
+import { Upload, Download, ChevronLeft, ChevronRight, Type, Eraser, CloudyIcon as Blur, RotateCcw, Move, Check, X } from "lucide-react"
 
 interface EditAction {
   type: "blur" | "erase" | "text"
@@ -18,6 +19,8 @@ interface EditAction {
   height?: number
   text?: string
   fontSize?: number
+  // Store the scale at which the action was created
+  scale?: number
 }
 
 export default function PDFEditor() {
@@ -30,7 +33,6 @@ export default function PDFEditor() {
   const [editActions, setEditActions] = useState<EditAction[]>([])
   const [isDrawing, setIsDrawing] = useState(false)
   const [startPos, setStartPos] = useState({ x: 0, y: 0 })
-  const [textInput, setTextInput] = useState("")
   const [fontSize, setFontSize] = useState(16)
   const [blurRadius, setBlurRadius] = useState(5)
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
@@ -38,6 +40,13 @@ export default function PDFEditor() {
 
   // Add state for the selected export format
   const [exportFormat, setExportFormat] = useState<"pdf" | "png" | "jpeg">("pdf")
+
+  // Text input states
+  const [textInputActive, setTextInputActive] = useState(false);
+  const [textInputPosition, setTextInputPosition] = useState({ x: 0, y: 0 });
+  const [textInputValue, setTextInputValue] = useState("");
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
+  const [textBoxScreenPosition, setTextBoxScreenPosition] = useState({ x: 0, y: 0 });
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -145,18 +154,18 @@ export default function PDFEditor() {
     } else if (editMode === "view") {
       return
     } else if (editMode === "text") {
-      const text = prompt("Enter text:")
-      if (text) {
-        const newAction: EditAction = {
-          type: "text",
-          x: x - panOffset.x,
-          y: y - panOffset.y,
-          text,
-          fontSize,
-        }
-        setEditActions((prev) => [...prev, newAction])
-        if (pdfDoc) renderPage(pdfDoc, currentPage)
-      }
+      // Get actual canvas position for drawing the text later
+      const drawX = x - panOffset.x;
+      const drawY = y - panOffset.y;
+      
+      // Store the position for drawing
+      setTextInputPosition({ x: drawX, y: drawY });
+      
+      // Store screen coordinates for positioning the text box
+      setTextBoxScreenPosition({ x: event.clientX, y: event.clientY });
+      
+      setTextInputActive(true);
+      setTextInputValue("");
     } else {
       setIsDrawing(true)
     }
@@ -330,6 +339,22 @@ export default function PDFEditor() {
       renderPage(pdfDoc, currentPage)
     }
   }, [scale])
+
+  // Add a function to handle text submission
+  const handleTextSubmit = () => {
+    if (textInputValue.trim()) {
+      const newAction: EditAction = {
+        type: "text",
+        x: textInputPosition.x,
+        y: textInputPosition.y,
+        text: textInputValue,
+        fontSize,
+      }
+      setEditActions((prev) => [...prev, newAction]);
+      if (pdfDoc) renderPage(pdfDoc, currentPage);
+    }
+    setTextInputActive(false);
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
@@ -667,6 +692,61 @@ export default function PDFEditor() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Inline Text Input */}
+      {textInputActive && (
+        <div 
+          className="fixed z-50"
+          style={{ 
+            left: `${textBoxScreenPosition.x}px`, 
+            top: `${textBoxScreenPosition.y - 10}px`,
+            transform: 'none' 
+          }}
+        >
+          <div className="bg-white rounded border-2 border-blue-400 shadow-lg p-1 flex flex-col min-w-[180px]">
+            <Textarea
+              ref={textInputRef}
+              value={textInputValue}
+              onChange={(e) => setTextInputValue(e.target.value)}
+              placeholder="Type here..."
+              className="text-sm p-1 border-0 focus:ring-0 resize-none"
+              rows={2}
+              style={{ fontSize: `${fontSize}px` }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleTextSubmit();
+                } else if (e.key === 'Escape') {
+                  setTextInputActive(false);
+                }
+              }}
+              autoFocus
+            />
+            <div className="flex justify-between mt-1 gap-1">
+              <div className="text-xs text-gray-500 self-center">
+                Press Enter to add
+              </div>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-1 py-0 text-xs"
+                  onClick={() => setTextInputActive(false)}
+                >
+                  <X className="w-3 h-3" />
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-6 px-2 py-0 text-xs bg-blue-500 hover:bg-blue-600 text-white"
+                  onClick={handleTextSubmit}
+                >
+                  <Check className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
